@@ -69,6 +69,12 @@ uint32_t GetCursorPosition(const mozc::commands::Output& response) {
   if (!response.has_preedit()) {
     return 0;
   }
+  // Live conversion is an editable composition. Its highlighted segment is
+  // not the insertion caret; using it makes the caret jump to the beginning
+  // as a delayed conversion reply materializes or a clause changes.
+  if (response.live_conversion() || response.live_conversion_pending()) {
+    return response.preedit().cursor();
+  }
   if (response.preedit().has_highlighted_position()) {
     return response.preedit().highlighted_position();
   }
@@ -301,6 +307,23 @@ void MozcResponseParser::ExecuteCallback(const mozc::commands::Output& response,
     return;
   }
 
+  auto* mozc_state = engine_->mozcState(ic);
+
+  // Live conversion is delivered as a delayed APPLY_LIVE_CONVERSION callback.
+  // Keep the whole command (generation and reading key) so the server can
+  // reject stale timers after the user keeps typing.
+  const bool is_live_conversion =
+      callback_command.type() ==
+      mozc::commands::SessionCommand::APPLY_LIVE_CONVERSION;
+  const uint32_t delay_millisec =
+      response.callback().has_delay_millisec()
+          ? response.callback().delay_millisec()
+          : 0;
+  if (is_live_conversion || delay_millisec > 0) {
+    mozc_state->ScheduleCallback(callback_command, delay_millisec);
+    return;
+  }
+
   mozc::commands::SessionCommand session_command;
   session_command.set_type(callback_command.type());
 
@@ -330,7 +353,6 @@ void MozcResponseParser::ExecuteCallback(const mozc::commands::Output& response,
       return;
   }
 
-  auto* mozc_state = engine_->mozcState(ic);
   mozc::commands::Output new_output;
   if (!mozc_state->SendCommand(session_command, &new_output)) {
     LOG(ERROR) << "Callback Command Failed";

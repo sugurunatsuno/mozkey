@@ -42,6 +42,7 @@
 #include <fcitx/userinterface.h>
 
 #include <cstdint>
+#include <ctime>
 #include <memory>
 #include <optional>
 #include <string>
@@ -80,7 +81,10 @@ MozcState::MozcState(InputContext* ic, MozcEngine* engine)
   }
 }
 
-MozcState::~MozcState() { MOZC_VLOG(1) << "MozcState destroyed."; }
+MozcState::~MozcState() {
+  CancelPendingCallback();
+  MOZC_VLOG(1) << "MozcState destroyed.";
+}
 
 void MozcState::UpdatePreeditMethod() {
   mozc::config::Config config;
@@ -277,6 +281,7 @@ void MozcState::SelectCandidate(int32_t id) {
   }
   MOZC_VLOG(1) << "select_candidate, id=" << id;
 
+  CancelPendingCallback();
   std::string error;
   mozc::commands::Output raw_response;
   if (!TrySendClick(id, &raw_response, &error)) {
@@ -291,6 +296,7 @@ void MozcState::SelectCandidate(int32_t id) {
 // This function is called from SCIM framework.
 void MozcState::Reset() {
   MOZC_VLOG(1) << "resetim";
+  CancelPendingCallback();
   std::string error;
   mozc::commands::Output raw_response;
   if (TrySendCommand(mozc::commands::SessionCommand::REVERT, &raw_response,
@@ -304,6 +310,7 @@ void MozcState::Reset() {
 
 bool MozcState::Paging(bool prev) {
   MOZC_VLOG(1) << "paging";
+  CancelPendingCallback();
   std::string error;
   mozc::commands::SessionCommand::CommandType command =
       prev ? mozc::commands::SessionCommand::CONVERT_PREV_PAGE
@@ -327,6 +334,7 @@ void MozcState::FocusIn() {
 // This function is called when the ic loses focus.
 void MozcState::FocusOut(const InputContextEvent& event) {
   MOZC_VLOG(1) << "MozcState::FocusOut()";
+  CancelPendingCallback();
   std::string error;
   mozc::commands::Output raw_response;
 
@@ -380,6 +388,7 @@ void MozcState::SetCompositionMode(mozc::commands::CompositionMode mode,
 
 void MozcState::SendCompositionMode(mozc::commands::CompositionMode mode) {
   // Send the SWITCH_COMPOSITION_MODE command.
+  CancelPendingCallback();
   std::string error;
   mozc::commands::Output raw_response;
   if (TrySendCompositionMode(mode, &raw_response, &error)) {
@@ -439,6 +448,41 @@ bool MozcState::SendCommand(
     mozc::commands::Output* new_output) {
   std::string error;
   return TrySendRawCommand(session_command, new_output, &error);
+}
+
+void MozcState::CancelPendingCallback() {
+  ++callback_generation_;
+  pending_callback_.reset();
+}
+
+void MozcState::ScheduleCallback(
+    const mozc::commands::SessionCommand& command,
+    uint32_t delay_millisec) {
+  CancelPendingCallback();
+  const uint64_t generation = callback_generation_;
+
+  auto apply = [this, generation, command]() {
+    if (generation != callback_generation_) {
+      return;
+    }
+    pending_callback_.reset();
+    mozc::commands::Output output;
+    if (SendCommand(command, &output)) {
+      ParseResponse(output);
+    }
+  };
+
+  if (delay_millisec == 0) {
+    apply();
+    return;
+  }
+
+  pending_callback_ = engine_->instance()->eventLoop().addTimeEvent(
+      CLOCK_MONOTONIC, static_cast<uint64_t>(delay_millisec) * 1000, 0,
+      [apply](EventSourceTime*, uint64_t) {
+        apply();
+        return false;
+      });
 }
 
 void MozcState::SetUsage(const std::string& title,

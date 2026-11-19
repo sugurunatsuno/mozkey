@@ -30,6 +30,7 @@
 #ifndef MOZC_UNIX_FCITX_FCITX_MOZC_H_
 #define MOZC_UNIX_FCITX_FCITX_MOZC_H_
 
+#include <fcitx-utils/event.h>
 #include <fcitx-utils/key.h>
 #include <fcitx/event.h>
 #include <fcitx/inputcontextproperty.h>
@@ -98,6 +99,12 @@ class MozcState : public InputContextProperty {
   MozcClientInterface* GetClient() const;
   void ReleaseClient();
 
+  // Schedules a server-requested callback command on the Fcitx event loop.
+  // Used for delayed live conversion (APPLY_LIVE_CONVERSION).
+  void ScheduleCallback(const mozc::commands::SessionCommand& command,
+                        uint32_t delay_millisec);
+  void CancelPendingCallback();
+
   bool SendCommand(const mozc::commands::SessionCommand& session_command,
                    mozc::commands::Output* new_output);
 
@@ -159,6 +166,9 @@ class MozcState : public InputContextProperty {
   std::string url_;  // URL to be opened by a browser.
   std::string description_;
   std::string title_;
+
+  std::unique_ptr<EventSourceTime> pending_callback_;
+  uint64_t callback_generation_ = 0;
 };
 
 }  // namespace fcitx
